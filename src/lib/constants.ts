@@ -14,22 +14,22 @@ export interface VaultConfig {
   logo: string;
 }
 
-// Aave V3 Pool on Base
+// Aave V3 Pool on Arbitrum mainnet
 export const AAVE_POOL_ADDRESS =
   (process.env.NEXT_PUBLIC_AAVE_POOL_ADDRESS as Address) ||
-  "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5";
+  "0x794a61358D6845594F94dc1DB02A252b5b4814aD";
 
-// Morpho Vault on Base (placeholder - update with your vault)
+// Morpho Vault on Arbitrum mainnet (placeholder - update with your vault)
 export const MORPHO_VAULT_ADDRESS =
   (process.env.NEXT_PUBLIC_MORPHO_VAULT_ADDRESS as Address) || "0x";
 
-// USDC on Base
-export const USDC_BASE_ADDRESS =
-  (process.env.NEXT_PUBLIC_USDC_BASE_ADDRESS as Address) ||
-  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+// USDC on Arbitrum mainnet
+export const USDC_ARB_ADDRESS =
+  (process.env.NEXT_PUBLIC_USDC_ARB_ADDRESS as Address) ||
+  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 
-// Destination chain for deposits (Base chain ID = 8453)
-export const DESTINATION_CHAIN_ID = 8453;
+// Destination chain for deposits (Arbitrum mainnet chain ID = 42161)
+export const DESTINATION_CHAIN_ID = 42161;
 
 // Available vaults for deposit
 export const VAULT_CONFIGS: VaultConfig[] = [
@@ -39,7 +39,7 @@ export const VAULT_CONFIGS: VaultConfig[] = [
     address: AAVE_POOL_ADDRESS,
     depositMethod: "supply",
     apy: "~4.5%",
-    description: "Supply USDC to Aave V3 on Base and earn interest",
+    description: "Bridge from any chain and deposit USDC to Aave V3 on Arbitrum",
     logo: "/aave.svg",
   },
   {
@@ -48,7 +48,7 @@ export const VAULT_CONFIGS: VaultConfig[] = [
     address: MORPHO_VAULT_ADDRESS,
     depositMethod: "deposit",
     apy: "~5.2%",
-    description: "Deposit USDC to Morpho vault on Base for optimized yields",
+    description: "Bridge from any chain and deposit USDC to Morpho vault on Arbitrum",
     logo: "/morpho.svg",
   },
 ];

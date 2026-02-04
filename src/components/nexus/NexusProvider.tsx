@@ -109,12 +109,23 @@ const NexusProvider = ({
   const swapIntent = useRef<OnSwapIntentHookData | null>(null);
 
   const setupNexus = useCallback(async () => {
+    const sdk = sdkRef.current;
     if (!sdk) return;
-    
+    console.debug("Nexus setupNexus: sdk present, fetching supported chains and balances");
+
     const list = sdk.utils.getSupportedChains(
       config?.network === "testnet" ? 0 : undefined
     );
     supportedChainsAndTokens.current = list ?? null;
+    
+    // Log supported chains for debugging
+    console.debug("Nexus supported chains:", list?.map((c: { id: number; name: string }) => ({ id: c.id, name: c.name })));
+    
+    // Check if our destination chain is supported
+    const destinationChainId = 42161; // Arbitrum
+    const isArbitrumSupported = sdk.utils.isSupportedChain(destinationChainId as any);
+    console.debug(`Arbitrum (${destinationChainId}) supported:`, isArbitrumSupported);
+    
     const swapList = sdk.utils.getSwapSupportedChainsAndTokens();
     swapSupportedChainsAndTokens.current = swapList ?? null;
     const [bridgeAbleBalanceResult, swapBalanceResult, rates] = await Promise.allSettled([
@@ -141,10 +152,12 @@ const NexusProvider = ({
       }
       exchangeRate.current = usdPerUnit;
     }
-  }, [sdk, config?.network]);
+  }, [config?.network]);
 
   const initializeNexus = async (provider: EthereumProvider) => {
+    const sdk = sdkRef.current;
     if (!sdk) return;
+    console.debug("initializeNexus: initializing SDK with provider", !!provider);
     setLoading(true);
     try {
       if (sdk.isInitialized()) throw new Error("Nexus is already initialized");
@@ -177,8 +190,9 @@ const NexusProvider = ({
   };
 
   const attachEventHooks = () => {
+    const sdk = sdkRef.current;
     if (!sdk) return;
-    
+
     sdk.setOnAllowanceHook((data: OnAllowanceHookData) => {
       allowance.current = data;
     });
@@ -193,7 +207,22 @@ const NexusProvider = ({
   };
 
   const handleInit = async (provider: EthereumProvider) => {
-    if (!sdk) return;
+    // Wait for SDK to be ready if it's still initializing
+    let sdk = sdkRef.current;
+    const maxWait = 20;
+    let waited = 0;
+    while (!sdk && waited < maxWait) {
+      // wait 100ms
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 100));
+      waited += 1;
+      sdk = sdkRef.current;
+    }
+
+    if (!sdk) {
+      throw new Error("Nexus SDK failed to initialize in time");
+    }
+
     if (sdk.isInitialized() || loading) {
       return;
     }
@@ -206,6 +235,7 @@ const NexusProvider = ({
   };
 
   const fetchBridgableBalance = async () => {
+    const sdk = sdkRef.current;
     if (!sdk) return;
     try {
       const updatedBalance = await sdk.getBalancesForBridge();
@@ -216,6 +246,7 @@ const NexusProvider = ({
   };
 
   const fetchSwapBalance = async () => {
+    const sdk = sdkRef.current;
     if (!sdk) return;
     try {
       const updatedBalance = await sdk.getBalancesForSwap();

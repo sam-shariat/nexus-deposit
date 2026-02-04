@@ -151,6 +151,13 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
       const token: SUPPORTED_TOKENS = "USDC";
       const chainId = DESTINATION_CHAIN_ID;
 
+      // Validate destination chain is supported
+      const isDestinationSupported = nexusSDK.utils.isSupportedChain(chainId as any);
+      if (!isDestinationSupported) {
+        throw new Error(`Destination chain ${chainId} is not supported by Nexus SDK`);
+      }
+      console.debug("Destination chain supported:", chainId, isDestinationSupported);
+
       // Get all source chains with balance
       const sourceChains = availableBalance?.breakdown
         ?.filter((chain: any) => parseFloat(chain.balance) > 0)
@@ -159,6 +166,9 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
       if (sourceChains.length === 0) {
         throw new Error("No source chains with balance available");
       }
+
+      // Log which source chains we'll use
+      console.debug("Source chains with balance:", sourceChains);
 
       const amountBigInt = nexusSDK.convertTokenReadableAmountToBigInt(
         amount,
@@ -176,16 +186,55 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         execute: executeParams,
       };
 
+      // Run simulation first to catch issues early
+      console.debug("Running simulation with params:", params);
+      setProgress(15);
+      
+      try {
+        const simulation = await nexusSDK.simulateBridgeAndExecute(params);
+        console.debug("Simulation result:", simulation);
+        setProgress(25);
+      } catch (simError) {
+        console.warn("Simulation failed (proceeding anyway):", simError);
+        // Don't throw - simulation failures may not be fatal
+      }
+
       setProgress(30);
       setStatus("confirming");
 
-      // Execute the bridge and deposit
-      const result = await nexusSDK.bridgeAndExecute(params);
+      // Execute the bridge and deposit — add logging and event handler to debug wallet confirmation
+      console.debug("bridgeAndExecute: params", params);
+      try {
+        const eventsLog: any[] = [];
+        const result = await nexusSDK.bridgeAndExecute(params, {
+          onEvent: (event: any) => {
+            console.debug("NEXUS_EVENT", event);
+            eventsLog.push(event);
+            // Update simple progress by event type if available
+            try {
+              const name = event?.name;
+              if (name === "STEPS_LIST") setProgress(35);
+              if (name === "STEP_COMPLETE") setProgress((p) => Math.min(100, p + 15));
+              if (name === "ERROR") {
+                console.error("NEXUS_EVENT_ERROR", event);
+                setError(event?.args?.message || "Nexus event error");
+                setStatus("error");
+              }
+            } catch (e) {
+              console.error("Error handling nexus event:", e);
+            }
+          },
+        });
 
-      setProgress(100);
-      setStatus("success");
-      setIntentUrl(result.bridgeExplorerUrl || null);
-      setTxHash(result.executeExplorerUrl || null);
+        console.debug("bridgeAndExecute result", result);
+        setProgress(100);
+        setStatus("success");
+        setIntentUrl(result.bridgeExplorerUrl || null);
+        setTxHash(result.executeExplorerUrl || null);
+      } catch (err) {
+        console.error("bridgeAndExecute threw:", err);
+        throw err;
+      }
 
       // Refresh balances
       await fetchBridgableBalance();
@@ -229,7 +278,7 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
           <span>Deposit to {vault.name}</span>
         </CardTitle>
         <CardDescription>
-          Bridge from any chain and deposit USDC to {vault.protocol} on Base
+          Bridge from any chain and deposit USDC to {vault.protocol} on Arbitrum
         </CardDescription>
       </CardHeader>
 
@@ -348,11 +397,11 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
             <div className="flex items-center justify-between p-3 rounded-lg bg-muted">
               <div className="flex items-center gap-2">
                 <img
-                  src="https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/base/info/logo.png"
-                  alt="Base"
+                  src="https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/arbitrum/info/logo.png"
+                  alt="Arbitrum"
                   className="w-6 h-6 rounded-full"
                 />
-                <span className="font-medium">Base</span>
+                <span className="font-medium">Arbitrum</span>
               </div>
               <ArrowRight className="w-4 h-4 text-muted-foreground" />
               <div className="flex items-center gap-2">
