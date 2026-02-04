@@ -51,6 +51,13 @@ type DepositStatus =
   | "success"
   | "error";
 
+interface LogEntry {
+  timestamp: Date;
+  type: "info" | "event" | "error" | "success" | "simulation" | "debug";
+  message: string;
+  data?: unknown;
+}
+
 interface DepositWidgetProps {
   vault: VaultConfig;
   className?: string;
@@ -74,6 +81,13 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [intentUrl, setIntentUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [showLogs, setShowLogs] = useState(false);
+
+  // Helper to add log entries
+  const addLog = useCallback((type: LogEntry["type"], message: string, data?: unknown) => {
+    setLogs((prev) => [...prev, { timestamp: new Date(), type, message, data }]);
+  }, []);
 
   // Get total available balance for USDC across all chains
   const availableBalance = bridgableBalance?.find(
@@ -146,17 +160,21 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
     setStatus("simulating");
     setError(null);
     setProgress(10);
+    setLogs([]); // Clear previous logs
+    setShowLogs(true); // Auto-show logs when starting
 
     try {
       const token: SUPPORTED_TOKENS = "USDC";
       const chainId = DESTINATION_CHAIN_ID;
+
+      addLog("info", "Starting deposit process", { token, chainId, amount });
 
       // Validate destination chain is supported
       const isDestinationSupported = nexusSDK.utils.isSupportedChain(chainId as any);
       if (!isDestinationSupported) {
         throw new Error(`Destination chain ${chainId} is not supported by Nexus SDK`);
       }
-      console.debug("Destination chain supported:", chainId, isDestinationSupported);
+      addLog("success", `Destination chain ${chainId} is supported`);
 
       // Get all source chains with balance
       const sourceChains = availableBalance?.breakdown
@@ -167,8 +185,7 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         throw new Error("No source chains with balance available");
       }
 
-      // Log which source chains we'll use
-      console.debug("Source chains with balance:", sourceChains);
+      addLog("info", `Found ${sourceChains.length} source chain(s) with balance`, { sourceChains });
 
       const amountBigInt = nexusSDK.convertTokenReadableAmountToBigInt(
         amount,
@@ -176,7 +193,17 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         chainId
       );
 
+      addLog("debug", "Converted amount to BigInt", { amountBigInt: amountBigInt.toString() });
+
       const executeParams = buildExecuteParams(token, amount, chainId, address);
+      addLog("debug", "Built execute params", { 
+        to: executeParams.to,
+        tokenApproval: {
+          token: executeParams.tokenApproval?.token,
+          amount: executeParams.tokenApproval?.amount?.toString(),
+          spender: executeParams.tokenApproval?.spender,
+        }
+      });
 
       const params: BridgeAndExecuteParams = {
         token,
@@ -186,60 +213,109 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         execute: executeParams,
       };
 
+      addLog("info", "Prepared bridgeAndExecute params", {
+        token: params.token,
+        amount: params.amount.toString(),
+        toChainId: params.toChainId,
+        sourceChains: params.sourceChains,
+      });
+
       // Run simulation first to catch issues early
-      console.debug("Running simulation with params:", params);
+      addLog("info", "Running simulation...");
       setProgress(15);
       
       try {
         const simulation = await nexusSDK.simulateBridgeAndExecute(params);
-        console.debug("Simulation result:", simulation);
+        addLog("simulation", "Simulation completed successfully", {
+          bridgeSimulation: simulation.bridgeSimulation ? {
+            estimatedFees: simulation.bridgeSimulation.estimatedFees,
+            estimatedTime: simulation.bridgeSimulation.estimatedTime,
+          } : null,
+          executeSimulation: simulation.executeSimulation ? {
+            gasUsed: simulation.executeSimulation.gasUsed?.toString(),
+            gasPrice: simulation.executeSimulation.gasPrice?.toString(),
+            gasFee: simulation.executeSimulation.gasFee?.toString(),
+          } : null,
+        });
         setProgress(25);
       } catch (simError) {
-        console.warn("Simulation failed (proceeding anyway):", simError);
-        // Don't throw - simulation failures may not be fatal
+        addLog("error", "Simulation failed (proceeding anyway)", { 
+          error: simError instanceof Error ? simError.message : String(simError) 
+        });
       }
 
       setProgress(30);
       setStatus("confirming");
+      addLog("info", "Waiting for wallet confirmation...");
 
-      // Execute the bridge and deposit — add logging and event handler to debug wallet confirmation
-      console.debug("bridgeAndExecute: params", params);
+      // Execute the bridge and deposit
       try {
-        const eventsLog: any[] = [];
         const result = await nexusSDK.bridgeAndExecute(params, {
           onEvent: (event: any) => {
-            console.debug("NEXUS_EVENT", event);
-            eventsLog.push(event);
-            // Update simple progress by event type if available
+            const eventName = event?.name || "UNKNOWN";
+            const eventArgs = event?.args;
+            
+            // Log the event
+            addLog("event", `Event: ${eventName}`, {
+              type: eventArgs?.type,
+              typeID: eventArgs?.typeID,
+              data: eventArgs?.data,
+            });
+
+            // Update progress by event type
             try {
-              const name = event?.name;
-              if (name === "STEPS_LIST") setProgress(35);
-              if (name === "STEP_COMPLETE") setProgress((p) => Math.min(100, p + 15));
-              if (name === "ERROR") {
-                console.error("NEXUS_EVENT_ERROR", event);
-                setError(event?.args?.message || "Nexus event error");
+              if (eventName === "STEPS_LIST") {
+                setProgress(35);
+                addLog("info", "Received steps list", { steps: eventArgs });
+              }
+              if (eventName === "STEP_COMPLETE") {
+                setProgress((p) => Math.min(95, p + 10));
+                addLog("success", `Step completed: ${eventArgs?.type || eventArgs?.typeID || "unknown"}`);
+              }
+              if (eventName === "SWAP_STEP_COMPLETE") {
+                addLog("success", `Swap step completed: ${eventArgs?.type || eventArgs?.typeID || "unknown"}`);
+              }
+              if (eventName === "ERROR") {
+                addLog("error", "Error event received", eventArgs);
+                setError(eventArgs?.message || "Nexus event error");
                 setStatus("error");
               }
             } catch (e) {
-              console.error("Error handling nexus event:", e);
+              addLog("error", "Error handling nexus event", { error: String(e) });
             }
           },
         });
 
-        console.debug("bridgeAndExecute result", result);
+        addLog("success", "bridgeAndExecute completed!", {
+          bridgeSkipped: result.bridgeSkipped,
+          executeTransactionHash: result.executeTransactionHash,
+          executeExplorerUrl: result.executeExplorerUrl,
+          bridgeExplorerUrl: result.bridgeExplorerUrl,
+          approvalTransactionHash: result.approvalTransactionHash,
+          toChainId: result.toChainId,
+        });
+
         setProgress(100);
         setStatus("success");
         setIntentUrl(result.bridgeExplorerUrl || null);
         setTxHash(result.executeExplorerUrl || null);
       } catch (err) {
-        console.error("bridgeAndExecute threw:", err);
+        addLog("error", "bridgeAndExecute failed", { 
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        });
         throw err;
       }
 
       // Refresh balances
+      addLog("info", "Refreshing balances...");
       await fetchBridgableBalance();
+      addLog("success", "Balances refreshed");
     } catch (err) {
       console.error("Deposit error:", err);
+      addLog("error", "Deposit failed", { 
+        error: err instanceof Error ? err.message : String(err) 
+      });
       setError(err instanceof Error ? err.message : "Deposit failed");
       setStatus("error");
 
@@ -262,6 +338,8 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
     setTxHash(null);
     setIntentUrl(null);
     setProgress(0);
+    setLogs([]);
+    setShowLogs(false);
   };
 
   const isProcessing = ["simulating", "confirming", "executing"].includes(
@@ -466,6 +544,90 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Try Again
               </Button>
+            )}
+
+            {/* Detailed Logs View */}
+            {(logs.length > 0 || showLogs) && (
+              <div className="space-y-2 mt-4">
+                <button
+                  onClick={() => setShowLogs(!showLogs)}
+                  className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <span className={cn(
+                    "transform transition-transform",
+                    showLogs ? "rotate-90" : ""
+                  )}>
+                    ▶
+                  </span>
+                  Detailed Logs ({logs.length})
+                </button>
+                
+                {showLogs && (
+                  <div className="rounded-lg border bg-muted/30 overflow-hidden">
+                    <div className="max-h-64 overflow-y-auto p-2 space-y-1 font-mono text-xs">
+                      {logs.length === 0 ? (
+                        <p className="text-muted-foreground p-2">No logs yet. Start a deposit to see detailed steps.</p>
+                      ) : (
+                        logs.map((log, i) => (
+                          <div
+                            key={i}
+                            className={cn(
+                              "p-2 rounded border-l-2",
+                              log.type === "info" && "bg-blue-500/5 border-blue-500",
+                              log.type === "event" && "bg-purple-500/5 border-purple-500",
+                              log.type === "error" && "bg-red-500/5 border-red-500",
+                              log.type === "success" && "bg-green-500/5 border-green-500",
+                              log.type === "simulation" && "bg-yellow-500/5 border-yellow-500",
+                              log.type === "debug" && "bg-gray-500/5 border-gray-500"
+                            )}
+                          >
+                            <div className="flex items-start gap-2">
+                              <span className="text-muted-foreground shrink-0">
+                                {log.timestamp.toLocaleTimeString()}
+                              </span>
+                              <span className={cn(
+                                "font-semibold uppercase shrink-0",
+                                log.type === "info" && "text-blue-600 dark:text-blue-400",
+                                log.type === "event" && "text-purple-600 dark:text-purple-400",
+                                log.type === "error" && "text-red-600 dark:text-red-400",
+                                log.type === "success" && "text-green-600 dark:text-green-400",
+                                log.type === "simulation" && "text-yellow-600 dark:text-yellow-400",
+                                log.type === "debug" && "text-gray-600 dark:text-gray-400"
+                              )}>
+                                [{log.type}]
+                              </span>
+                              <span className="break-all">{log.message}</span>
+                            </div>
+                            {log.data !== undefined && (
+                              <pre className="mt-1 text-[10px] text-muted-foreground overflow-x-auto bg-background/50 p-1 rounded">
+                                {(() => {
+                                  try {
+                                    return JSON.stringify(log.data, (_, v) => 
+                                      typeof v === 'bigint' ? v.toString() : v, 2
+                                    );
+                                  } catch {
+                                    return String(log.data);
+                                  }
+                                })()}
+                              </pre>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    {logs.length > 0 && (
+                      <div className="border-t p-2 flex justify-end">
+                        <button
+                          onClick={() => setLogs([])}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          Clear logs
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </>
         )}

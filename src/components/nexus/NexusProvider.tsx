@@ -194,15 +194,41 @@ const NexusProvider = ({
     if (!sdk) return;
 
     sdk.setOnAllowanceHook((data: OnAllowanceHookData) => {
+      console.debug("Nexus onAllowanceHook triggered:", data);
       allowance.current = data;
+      // Auto-allow with 'max' for all sources to proceed with the flow
+      // data.sources is an array, we need to provide 'max' for each
+      try {
+        const allowValues = data.sources?.map(() => 'max') || ['max'];
+        console.debug("Auto-allowing allowances with:", allowValues);
+        data.allow(allowValues);
+      } catch (err) {
+        console.error("Error auto-allowing allowance:", err);
+      }
     });
 
     sdk.setOnIntentHook((data: OnIntentHookData) => {
+      console.debug("Nexus onIntentHook triggered:", data);
       intent.current = data;
+      // Auto-allow the intent to proceed with the flow
+      try {
+        console.debug("Auto-allowing intent");
+        data.allow();
+      } catch (err) {
+        console.error("Error auto-allowing intent:", err);
+      }
     });
 
     sdk.setOnSwapIntentHook((data: OnSwapIntentHookData) => {
+      console.debug("Nexus onSwapIntentHook triggered:", data);
       swapIntent.current = data;
+      // Auto-allow the swap intent to proceed with the flow
+      try {
+        console.debug("Auto-allowing swap intent");
+        data.allow();
+      } catch (err) {
+        console.error("Error auto-allowing swap intent:", err);
+      }
     });
   };
 
