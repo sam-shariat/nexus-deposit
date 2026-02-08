@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect, useReducer } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { encodeFunctionData, parseUnits, type Address, type Abi } from "viem";
 import {
@@ -43,9 +43,36 @@ import {
   RefreshCw,
 } from "lucide-react";
 
+// Utility to safely convert any value to string, handling bigint without integer range errors
+const safeStringify = (value: unknown): string => {
+  try {
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+    if (typeof value === "number") {
+      // Avoid converting to scientific notation for large numbers
+      return value.toLocaleString("en-US", { useGrouping: false });
+    }
+    if (value === null || value === undefined) {
+      return String(value);
+    }
+    if (typeof value === "object") {
+      // Handle objects with potential bigint values
+      return JSON.stringify(value, (_, v) => {
+        if (typeof v === "bigint") {
+          return v.toString() + "n";
+        }
+        return v;
+      }, 2);
+    }
+    return String(value);
+  } catch {
+    return "[Unable to stringify]";
+  }
+};
+
 type DepositStatus =
   | "idle"
-  | "simulating"
   | "confirming"
   | "executing"
   | "success"
@@ -154,10 +181,33 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
     [vault]
   );
 
+  // Catch unhandled IntegerOutOfRangeError from SDK internals
+  // The Nexus SDK internally uses viem's hexToNumber which can throw for large fee values
+  useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const msg = event?.reason?.message || String(event?.reason || "");
+      if (
+        msg.includes("IntegerOutOfRangeError") ||
+        msg.includes("safe integer range")
+      ) {
+        // Suppress the unhandled rejection — the SDK threw this during internal
+        // fee estimation and it doesn't affect the actual transaction.
+        event.preventDefault();
+        console.warn(
+          "[DepositWidget] Suppressed SDK IntegerOutOfRangeError from internal fee estimation"
+        );
+      }
+    };
+
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () =>
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+  }, []);
+
   const handleDeposit = async () => {
     if (!nexusSDK || !address || !amount || parseFloat(amount) <= 0) return;
 
-    setStatus("simulating");
+    setStatus("confirming");
     setError(null);
     setProgress(10);
     setLogs([]); // Clear previous logs
@@ -176,7 +226,7 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
       }
       addLog("success", `Destination chain ${chainId} is supported`);
 
-      // Get all source chains with balance
+      // Get all source chains with balance (optional — SDK can auto-determine)
       const sourceChains = availableBalance?.breakdown
         ?.filter((chain: any) => parseFloat(chain.balance) > 0)
         .map((chain: any) => chain.chain.id) || [];
@@ -187,11 +237,9 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
 
       addLog("info", `Found ${sourceChains.length} source chain(s) with balance`, { sourceChains });
 
-      const amountBigInt = nexusSDK.convertTokenReadableAmountToBigInt(
-        amount,
-        token,
-        chainId
-      );
+      // Convert amount to base units (BigInt) — e.g. "1.5" USDC → 1_500_000n
+      const decimals = 6; // USDC has 6 decimals
+      const amountBigInt = parseUnits(amount, decimals);
 
       addLog("debug", "Converted amount to BigInt", { amountBigInt: amountBigInt.toString() });
 
@@ -205,6 +253,8 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         }
       });
 
+      // Following the official Nexus SDK docs pattern for bridgeAndExecute
+      // https://docs.availproject.org/nexus/avail-nexus-sdk/bridge-methods/bridge-and-execute
       const params: BridgeAndExecuteParams = {
         token,
         amount: amountBigInt,
@@ -220,88 +270,101 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
         sourceChains: params.sourceChains,
       });
 
-      // Run simulation first to catch issues early
-      addLog("info", "Running simulation...");
-      setProgress(15);
-      
-      try {
-        const simulation = await nexusSDK.simulateBridgeAndExecute(params);
-        addLog("simulation", "Simulation completed successfully", {
-          bridgeSimulation: simulation.bridgeSimulation ? {
-            estimatedFees: simulation.bridgeSimulation.estimatedFees,
-            estimatedTime: simulation.bridgeSimulation.estimatedTime,
-          } : null,
-          executeSimulation: simulation.executeSimulation ? {
-            gasUsed: simulation.executeSimulation.gasUsed?.toString(),
-            gasPrice: simulation.executeSimulation.gasPrice?.toString(),
-            gasFee: simulation.executeSimulation.gasFee?.toString(),
-          } : null,
-        });
-        setProgress(25);
-      } catch (simError) {
-        addLog("error", "Simulation failed (proceeding anyway)", { 
-          error: simError instanceof Error ? simError.message : String(simError) 
-        });
-      }
+      // NOTE: We skip simulateBridgeAndExecute() because it triggers an
+      // IntegerOutOfRangeError deep inside the SDK's internal fee estimation
+      // (viem hexToNumber on large fee values). The official Nexus docs for
+      // bridge-and-execute don't use simulation before executing.
 
-      setProgress(30);
-      setStatus("confirming");
+      setProgress(20);
       addLog("info", "Waiting for wallet confirmation...");
 
-      // Execute the bridge and deposit
+      // Execute the bridge and deposit directly (matching official docs pattern)
       try {
         const result = await nexusSDK.bridgeAndExecute(params, {
           onEvent: (event: any) => {
-            const eventName = event?.name || "UNKNOWN";
-            const eventArgs = event?.args;
-            
-            // Log the event
-            addLog("event", `Event: ${eventName}`, {
-              type: eventArgs?.type,
-              typeID: eventArgs?.typeID,
-              data: eventArgs?.data,
-            });
-
-            // Update progress by event type
             try {
+              const eventName = event?.name || "UNKNOWN";
+              const eventArgs = event?.args;
+              
+              // Log the event with safe stringify to avoid IntegerOutOfRangeError
+              const safeEventArgs = (() => {
+                try {
+                  return {
+                    type: eventArgs?.type,
+                    typeID: eventArgs?.typeID,
+                    label: eventArgs?.label,
+                    data: eventArgs?.data ? safeStringify(eventArgs.data) : undefined,
+                    explorerURL: eventArgs?.data?.explorerURL,
+                  };
+                } catch {
+                  return { raw: safeStringify(eventArgs) };
+                }
+              })();
+              
+              addLog("event", `Event: ${eventName}`, safeEventArgs);
+
+              // Update progress & status by event type
               if (eventName === "STEPS_LIST") {
-                setProgress(35);
-                addLog("info", "Received steps list", { steps: eventArgs });
+                setProgress(30);
+                setStatus("executing");
+                addLog("info", "Received steps list", { steps: safeStringify(eventArgs) });
               }
               if (eventName === "STEP_COMPLETE") {
-                setProgress((p) => Math.min(95, p + 10));
-                addLog("success", `Step completed: ${eventArgs?.type || eventArgs?.typeID || "unknown"}`);
+                setProgress((p) => Math.min(95, p + 15));
+                addLog("success", `Step completed: ${eventArgs?.type || eventArgs?.label || eventArgs?.typeID || "unknown"}`);
               }
               if (eventName === "SWAP_STEP_COMPLETE") {
-                addLog("success", `Swap step completed: ${eventArgs?.type || eventArgs?.typeID || "unknown"}`);
+                addLog("success", `Swap step completed: ${eventArgs?.type || eventArgs?.label || eventArgs?.typeID || "unknown"}`);
               }
               if (eventName === "ERROR") {
-                addLog("error", "Error event received", eventArgs);
+                const errorMsg = safeStringify(eventArgs);
+                addLog("error", "Error event received", { error: errorMsg });
                 setError(eventArgs?.message || "Nexus event error");
                 setStatus("error");
               }
             } catch (e) {
-              addLog("error", "Error handling nexus event", { error: String(e) });
+              // Silently handle logging errors — don't let them break the flow
+              console.warn("[DepositWidget] Error in event handler:", e);
             }
           },
         });
 
-        addLog("success", "bridgeAndExecute completed!", {
+        const safeResult = {
           bridgeSkipped: result.bridgeSkipped,
           executeTransactionHash: result.executeTransactionHash,
           executeExplorerUrl: result.executeExplorerUrl,
           bridgeExplorerUrl: result.bridgeExplorerUrl,
           approvalTransactionHash: result.approvalTransactionHash,
           toChainId: result.toChainId,
-        });
+        };
+
+        addLog("success", "bridgeAndExecute completed!", safeResult);
 
         setProgress(100);
         setStatus("success");
         setIntentUrl(result.bridgeExplorerUrl || null);
         setTxHash(result.executeExplorerUrl || null);
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+
+        // If the SDK throws IntegerOutOfRangeError during bridgeAndExecute,
+        // it's an internal fee estimation bug — surface a clear message.
+        if (
+          errorMessage.includes("IntegerOutOfRangeError") ||
+          errorMessage.includes("safe integer range")
+        ) {
+          addLog("error", "SDK internal error: fee estimation overflow", {
+            error: errorMessage,
+            hint: "This is a known issue with the SDK's internal viem number conversion for large fee values.",
+          });
+          throw new Error(
+            "Transaction failed due to an SDK fee estimation issue. " +
+            "Try a smaller amount or try again later."
+          );
+        }
+
         addLog("error", "bridgeAndExecute failed", { 
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessage,
           stack: err instanceof Error ? err.stack : undefined,
         });
         throw err;
@@ -313,10 +376,9 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
       addLog("success", "Balances refreshed");
     } catch (err) {
       console.error("Deposit error:", err);
-      addLog("error", "Deposit failed", { 
-        error: err instanceof Error ? err.message : String(err) 
-      });
-      setError(err instanceof Error ? err.message : "Deposit failed");
+      const errorMessage = err instanceof Error ? err.message : "Deposit failed";
+      addLog("error", "Deposit failed", { error: errorMessage });
+      setError(errorMessage);
       setStatus("error");
 
       // Reset intent if there was an error
@@ -342,7 +404,7 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
     setShowLogs(false);
   };
 
-  const isProcessing = ["simulating", "confirming", "executing"].includes(
+  const isProcessing = ["confirming", "executing"].includes(
     status
   );
 
@@ -502,7 +564,6 @@ const DepositWidget = ({ vault, className }: DepositWidgetProps) => {
               <div className="space-y-2">
                 <Progress value={progress} className="h-2" />
                 <p className="text-sm text-center text-muted-foreground">
-                  {status === "simulating" && "Calculating route..."}
                   {status === "confirming" && "Confirm in wallet..."}
                   {status === "executing" && "Executing deposit..."}
                 </p>

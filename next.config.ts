@@ -16,7 +16,7 @@ const nextConfig: NextConfig = {
   },
   webpack: (config, { isServer }) => {
     config.externals.push("pino-pretty", "lokijs", "encoding");
-    
+
     // Fix for MetaMask SDK @react-native-async-storage warning
     config.resolve.fallback = {
       ...config.resolve.fallback,

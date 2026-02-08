@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { useAccountEffect } from "wagmi";
+import { pushDebugLog } from "@/components/deposit/components/debug-log-panel";
 
 // Types - these are safe to import statically as they don't cause SSR issues
 type NexusSDK = any;
@@ -70,19 +71,38 @@ const NexusProvider = ({
 
   const sdkRef = useRef<NexusSDK | null>(null);
   const [sdkReady, setSdkReady] = useState(false);
+  // Resolvers for code that needs to wait for SDK construction
+  const sdkReadyPromiseRef = useRef<Promise<void> | null>(null);
+  const sdkReadyResolveRef = useRef<(() => void) | null>(null);
 
   // Initialize SDK only on client side with dynamic import
   useEffect(() => {
     const initSDK = async () => {
       if (!sdkRef.current && typeof window !== "undefined") {
+        // Create a promise other code can await
+        if (!sdkReadyPromiseRef.current) {
+          sdkReadyPromiseRef.current = new Promise<void>((resolve) => {
+            sdkReadyResolveRef.current = resolve;
+          });
+        }
         try {
+          pushDebugLog("info", "NexusProvider", "Dynamically importing @avail-project/nexus-core...");
           const { NexusSDK } = await import("@avail-project/nexus-core");
           sdkRef.current = new NexusSDK({
             ...stableConfig,
           });
           setSdkReady(true);
+          pushDebugLog("success", "NexusProvider", "NexusSDK constructed successfully", { network: stableConfig.network });
+          // Signal that SDK is constructed
+          sdkReadyResolveRef.current?.();
         } catch (error) {
           console.error("Failed to initialize Nexus SDK:", error);
+          pushDebugLog("error", "NexusProvider", "Failed to construct NexusSDK", {
+            message: (error as Error)?.message,
+            stack: (error as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
+          });
+          // Resolve anyway so waiters don't hang forever
+          sdkReadyResolveRef.current?.();
         }
       }
     };
@@ -233,20 +253,20 @@ const NexusProvider = ({
   };
 
   const handleInit = async (provider: EthereumProvider) => {
-    // Wait for SDK to be ready if it's still initializing
-    let sdk = sdkRef.current;
-    const maxWait = 20;
-    let waited = 0;
-    while (!sdk && waited < maxWait) {
-      // wait 100ms
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => setTimeout(r, 100));
-      waited += 1;
-      sdk = sdkRef.current;
+    pushDebugLog("info", "NexusProvider", "handleInit called", { hasProvider: !!provider });
+
+    // Wait for the SDK dynamic import to complete (no arbitrary polling)
+    if (sdkReadyPromiseRef.current) {
+      // Race against a 15-second timeout so callers don't hang forever
+      const timeout = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error("Nexus SDK failed to initialize in time")), 15_000)
+      );
+      await Promise.race([sdkReadyPromiseRef.current, timeout]);
     }
 
+    const sdk = sdkRef.current;
     if (!sdk) {
-      throw new Error("Nexus SDK failed to initialize in time");
+      throw new Error("Nexus SDK failed to initialize — dynamic import may have failed");
     }
 
     if (sdk.isInitialized() || loading) {

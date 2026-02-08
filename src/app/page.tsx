@@ -1,13 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useNexus } from "@/components/nexus/NexusProvider";
 import UnifiedBalance from "@/components/deposit/UnifiedBalance";
 import VaultSelector from "@/components/deposit/VaultSelector";
-import DepositWidget from "@/components/deposit/DepositWidget";
-import { VAULT_CONFIGS, type VaultConfig } from "@/lib/constants";
+import NexusDeposit from "@/components/deposit/nexus-deposit";
+import { DebugLogPanel } from "@/components/deposit/components/debug-log-panel";
+import {
+  type ExecuteParams,
+} from "@avail-project/nexus-core";
+import { encodeFunctionData, type Address } from "viem";
+import {
+  VAULT_CONFIGS,
+  AAVE_POOL_ABI,
+  MORPHO_VAULT_ABI,
+  DESTINATION_CHAIN_ID,
+  type VaultConfig,
+} from "@/lib/constants";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Card,
@@ -24,6 +35,73 @@ export default function Home() {
   const [selectedVault, setSelectedVault] = useState<VaultConfig | null>(
     VAULT_CONFIGS[0]
   );
+
+  // Build the executeDeposit function for the selected vault
+  // This receives any token symbol + address from the widget (could be ETH, USDC, USDT, etc.)
+  // The Nexus widget handles swapping to USDC on destination chain automatically
+  const executeDeposit = useCallback(
+    (
+      tokenSymbol: string,
+      tokenAddress: `0x${string}`,
+      amount: bigint,
+      chainId: number,
+      user: `0x${string}`
+    ): Omit<ExecuteParams, "toChainId"> => {
+      const vault = selectedVault || VAULT_CONFIGS[0];
+
+      if (vault.protocol === "aave") {
+        // Aave supply: the widget provides the correct tokenAddress on the destination chain
+        const data = encodeFunctionData({
+          abi: AAVE_POOL_ABI,
+          functionName: "supply",
+          args: [tokenAddress, amount, user, 0],
+        });
+
+        return {
+          to: vault.address,
+          data,
+          tokenApproval: {
+            token: tokenAddress, // Must be the contract address, not symbol
+            amount,
+            spender: vault.address,
+          },
+        };
+      } else {
+        // Morpho vault deposit
+        const data = encodeFunctionData({
+          abi: MORPHO_VAULT_ABI,
+          functionName: "deposit",
+          args: [amount, user],
+        });
+
+        return {
+          to: vault.address,
+          data,
+          tokenApproval: {
+            token: tokenAddress, // Must be the contract address, not symbol
+            amount,
+            spender: vault.address,
+          },
+        };
+      }
+    },
+    [selectedVault]
+  );
+
+  // Build destination config for the NexusDeposit widget
+  // Use hardcoded values to avoid SSR issues with SDK constants
+  const destinationConfig = {
+    chainId: DESTINATION_CHAIN_ID as any,
+    tokenAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as `0x${string}`, // USDC on Arbitrum
+    tokenSymbol: "USDC",
+    tokenDecimals: 6,
+    tokenLogo: "https://coin-images.coingecko.com/coins/images/6319/large/usdc.png",
+    label: `Deposit to ${selectedVault?.name || "Aave V3"}`,
+    gasTokenSymbol: "ETH",
+    estimatedTime: "≈ 30s",
+    explorerUrl: "https://arbiscan.io",
+    depositTargetLogo: selectedVault?.logo,
+  };
 
   return (
     <div className="container mx-auto px-4 py-8 space-y-8">
@@ -200,7 +278,25 @@ export default function Home() {
               onSelect={setSelectedVault}
             />
 
-            {selectedVault && <DepositWidget vault={selectedVault} />}
+            {selectedVault && (
+              <NexusDeposit
+                embed={true}
+                heading={`Deposit to ${selectedVault.name}`}
+                destination={destinationConfig}
+                executeDeposit={executeDeposit}
+                onSuccess={() => {
+                  console.log("Deposit successful!");
+                }}
+                onError={(error) => {
+                  console.error("Deposit failed:", error);
+                }}
+              />
+            )}
+          </div>
+
+          {/* Debug Log Panel - full width below the grid */}
+          <div className="lg:col-span-3 mt-6">
+            <DebugLogPanel />
           </div>
         </div>
       )}

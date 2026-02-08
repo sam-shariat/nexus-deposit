@@ -28,7 +28,7 @@ const VaultSelector = ({
     <div className={cn("space-y-4", className)}>
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Select Destination</h3>
-        <span className="text-sm text-muted-foreground">on Base</span>
+        <span className="text-sm text-muted-foreground">on Arbitrum</span>
       </div>
 
       <div className="grid gap-3">
