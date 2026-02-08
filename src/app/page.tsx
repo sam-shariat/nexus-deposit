@@ -8,6 +8,7 @@ import UnifiedBalance from "@/components/deposit/UnifiedBalance";
 import VaultSelector from "@/components/deposit/VaultSelector";
 import NexusDeposit from "@/components/deposit/nexus-deposit";
 import { DebugLogPanel } from "@/components/deposit/components/debug-log-panel";
+import ViewHistory from "@/components/view-history/view-history";
 import {
   type ExecuteParams,
 } from "@avail-project/nexus-core";
@@ -200,6 +201,19 @@ export default function Home() {
           {/* Left sidebar - Balance */}
           <div className="lg:col-span-1 space-y-6">
             <UnifiedBalance />
+
+            {/* Transaction History */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center justify-between">
+                  Transaction History
+                  <ViewHistory className="" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ViewHistory viewAsModal={false} className="w-full" />
+              </CardContent>
+            </Card>
 
             {/* Supported Chains Info */}
             <Card>
