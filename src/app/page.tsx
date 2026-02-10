@@ -8,6 +8,7 @@ import UnifiedBalance from "@/components/deposit/UnifiedBalance";
 import VaultSelector from "@/components/deposit/VaultSelector";
 import NexusDeposit from "@/components/deposit/nexus-deposit";
 import { DebugLogPanel } from "@/components/deposit/components/debug-log-panel";
+import { AaveBalance } from "@/components/deposit/components/aave-balance";
 import ViewHistory from "@/components/view-history/view-history";
 import {
   type ExecuteParams,
@@ -306,6 +307,11 @@ export default function Home() {
                 }}
               />
             )}
+          </div>
+
+          {/* Aave USDC Balance — below deposit, above debug log */}
+          <div className="lg:col-span-2 lg:col-start-2">
+            <AaveBalance />
           </div>
 
           {/* Debug Log Panel - full width below the grid */}
